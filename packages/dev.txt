@@ -1,0 +1,5 @@
+github-cli
+lazygit
+docker
+docker-compose
+go
