@@ -1,0 +1,48 @@
+/* ~/.config/swaync/style.css  (PrymX - Tokyo Night) */
+
+* {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 13px;
+}
+
+.notification {
+  background: #1a1b26;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+  margin: 6px;
+  padding: 0;
+}
+
+.notification-content {
+  padding: 10px;
+  color: #c0caf5;
+}
+
+.notification.critical { border-color: #f7768e; }
+.notification.low      { border-color: #565f89; }
+
+.summary { color: #c0caf5; font-weight: bold; }
+.body    { color: #a9b1d6; }
+.time    { color: #565f89; }
+
+.close-button {
+  background: transparent;
+  color: #565f89;
+  border-radius: 8px;
+}
+.close-button:hover { background: #f7768e; color: #1a1b26; }
+
+.control-center {
+  background: #1a1b26;
+  border: 1px solid #3b4261;
+  border-radius: 10px;
+}
+
+.widget-title { color: #c0caf5; font-size: 15px; padding: 8px; }
+.widget-title button {
+  background: #283457;
+  color: #c0caf5;
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+.widget-dnd { color: #c0caf5; padding: 8px; }

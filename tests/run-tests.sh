@@ -15,6 +15,7 @@ FILTER=${1:-}
 
 PASS=0
 FAIL=0
+SKIPPED=0
 FAILED_NAMES=()
 
 WORK=$(mktemp -d -t prymx-tests-XXXXXX)
@@ -35,6 +36,10 @@ it() {
 }
 
 pass() { PASS=$((PASS + 1)); printf '  %sok%s   %s\n' "$G" "$N" "$CURRENT"; }
+skipped() {
+    SKIPPED=$((SKIPPED + 1))
+    printf '  %sskip%s %s %s(%s)%s\n' "$D" "$N" "$CURRENT" "$D" "$1" "$N"
+}
 fail() {
     FAIL=$((FAIL + 1)); FAILED_NAMES+=("$CURRENT")
     printf '  %sFAIL%s %s\n       %s\n' "$R" "$N" "$CURRENT" "$1"
@@ -399,6 +404,147 @@ if it "prym refuses to run as root"; then
 fi
 
 # ---------------------------------------------------------------------------
+# Hardware detection (modules are sourced further down by load_modules; these
+# two are pure functions, so source their modules early)
+# ---------------------------------------------------------------------------
+
+printf '\n%s hardware detection%s\n' "$D" "$N"
+
+# shellcheck source=/dev/null
+source "$REPO/modules/40-gpu.sh"
+# shellcheck source=/dev/null
+source "$REPO/modules/60-bluetooth.sh"
+
+HWSTUB="$WORK/hwstub"
+mkdir -p "$HWSTUB"
+
+if it "GPU detection reads every vendor out of lspci"; then
+    cat > "$HWSTUB/lspci" <<'EOF'
+#!/bin/sh
+cat <<'OUT'
+00:02.0 VGA compatible controller [0300]: Intel Corporation UHD Graphics [8086:9bc4]
+01:00.0 VGA compatible controller [0300]: NVIDIA Corporation TU117M [10de:1f99]
+02:00.0 Audio device [0403]: NVIDIA Corporation Device [10de:10fa]
+OUT
+EOF
+    chmod +x "$HWSTUB/lspci"
+    out=$(PATH="$HWSTUB:$PATH" _gpu_vendors | tr '\n' ' ')
+    assert_eq "$out" "nvidia intel " && pass
+fi
+
+if it "GPU detection sees an AMD card and ignores non-display devices"; then
+    cat > "$HWSTUB/lspci" <<'EOF'
+#!/bin/sh
+cat <<'OUT'
+03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 32 [1002:747e]
+04:00.0 Non-VGA unclassified device: NVIDIA Corporation Something
+OUT
+EOF
+    chmod +x "$HWSTUB/lspci"
+    out=$(PATH="$HWSTUB:$PATH" _gpu_vendors | tr '\n' ' ')
+    assert_eq "$out" "amd " && pass
+fi
+
+if it "bluetooth detection finds a bound adapter in sysfs"; then
+    mkdir -p "$WORK/sysfs-bt/hci0"
+    BLUETOOTH_SYSFS_GLOB="$WORK/sysfs-bt/*" _has_bluetooth_radio
+    assert_ok "$?" && pass
+fi
+
+if it "bluetooth detection finds an adapter on the USB bus"; then
+    cat > "$HWSTUB/lsusb" <<'EOF'
+#!/bin/sh
+echo "Bus 001 Device 004: ID 8087:0026 Intel Corp. AX201 Bluetooth"
+EOF
+    chmod +x "$HWSTUB/lsusb"
+    PATH="$HWSTUB:$PATH" BLUETOOTH_SYSFS_GLOB="$WORK/none/*" _has_bluetooth_radio
+    assert_ok "$?" && pass
+fi
+
+if it "bluetooth detection reports nothing on a machine without a radio"; then
+    cat > "$HWSTUB/lsusb" <<'EOF'
+#!/bin/sh
+echo "Bus 001 Device 002: ID 1d6b:0002 Linux Foundation 2.0 root hub"
+EOF
+    cat > "$HWSTUB/lspci" <<'EOF'
+#!/bin/sh
+echo "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics"
+EOF
+    chmod +x "$HWSTUB/lsusb" "$HWSTUB/lspci"
+    PATH="$HWSTUB:$PATH" BLUETOOTH_SYSFS_GLOB="$WORK/none/*" _has_bluetooth_radio
+    assert_fails "$?" && pass
+fi
+
+# ---------------------------------------------------------------------------
+# The configs we ship - parsed with the real tools where they are installed
+# ---------------------------------------------------------------------------
+
+printf '\n%s shipped configs%s\n' "$D" "$N"
+
+# shellcheck source=/dev/null
+source "$REPO/modules/95-validate.sh"
+
+if it "the niri config validates"; then
+    if ! command -v niri >/dev/null; then
+        skipped "niri is not installed"
+    else
+        out=$(niri validate --config "$REPO/dotfiles/niri/.config/niri/config.kdl" 2>&1); rc=$?
+        assert_ok "$rc" && pass || printf '       %s\n' "$out"
+    fi
+fi
+
+if it "the fish config parses"; then
+    if ! command -v fish >/dev/null; then
+        skipped "fish is not installed"
+    else
+        out=$(fish --no-execute "$REPO/dotfiles/fish/.config/fish/config.fish" 2>&1); rc=$?
+        assert_ok "$rc" && pass || printf '       %s\n' "$out"
+    fi
+fi
+
+if it "the tmux config parses"; then
+    if ! command -v tmux >/dev/null; then
+        skipped "tmux is not installed"
+    else
+        out=$(tmux -L prymx-selftest -f "$REPO/dotfiles/tmux/.config/tmux/tmux.conf" \
+                start-server \; kill-server 2>&1); rc=$?
+        assert_ok "$rc" && pass || printf '       %s\n' "$out"
+    fi
+fi
+
+if it "the waybar and swaync JSON configs parse"; then
+    if ! command -v python3 >/dev/null; then
+        skipped "python3 is not installed"
+    else
+        _json_parses "$REPO/dotfiles/waybar/.config/waybar/config.jsonc" \
+            && _json_parses "$REPO/dotfiles/swaync/.config/swaync/config.json" \
+            && pass || fail "a shipped JSON config does not parse"
+    fi
+fi
+
+if it "the JSON validator rejects malformed JSON"; then
+    if ! command -v python3 >/dev/null; then
+        skipped "python3 is not installed"
+    else
+        printf '{"a": 1,}\n' > "$WORK/bad.json"
+        _json_parses "$WORK/bad.json" 2>/dev/null
+        assert_fails "$?" && pass
+    fi
+fi
+
+if it "every program with a keybinding or autostart ships a config"; then
+    missing=""
+    for prog in waybar fuzzel swaync hyprlock hypridle; do
+        case $prog in
+            hyprlock|hypridle) dir="$REPO/dotfiles/hypr/.config/hypr" ;;
+            *)                 dir="$REPO/dotfiles/$prog/.config/$prog" ;;
+        esac
+        [[ -d $dir ]] || missing+="$prog "
+    done
+    assert_eq "$missing" "" && pass
+fi
+
+# ---------------------------------------------------------------------------
 # Repository invariants
 # ---------------------------------------------------------------------------
 
@@ -447,8 +593,8 @@ fi
 
 # ---------------------------------------------------------------------------
 
-printf '\n%s%d passed%s, %s%d failed%s\n' "$G" "$PASS" "$N" \
-    "$( ((FAIL)) && printf '%s' "$R" )" "$FAIL" "$N"
+printf '\n%s%d passed%s, %s%d failed%s, %d skipped\n' "$G" "$PASS" "$N" \
+    "$( ((FAIL)) && printf '%s' "$R" )" "$FAIL" "$N" "$SKIPPED"
 if (( FAIL )); then
     printf 'Failed: %s\n' "${FAILED_NAMES[*]}"
     exit 1

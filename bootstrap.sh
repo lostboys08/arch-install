@@ -31,33 +31,38 @@ DOTFILES_DIR="$PRYMX_REPO/dotfiles"
 # ---------------------------------------------------------------------------
 
 STEP_NAMES=(
-    multilib identity prym update snapper snapshot aur packages gpu greeter
-    bluetooth sysctl maintenance services dotfiles plugins shell github
+    multilib identity prym update network snapper snapshot aur packages gpu
+    greeter launcher bluetooth sysctl maintenance services dotfiles plugins
+    validate shell github
 )
 STEP_FUNCS=(
     enable_multilib setup_prymx_identity install_prym_cli system_update
-    setup_snapper snapshot_pre_bootstrap install_aur_helper install_packages
-    setup_gpu_drivers setup_greeter setup_bluetooth apply_sysctl_tweaks
-    setup_maintenance enable_services link_dotfiles setup_plugin_managers
-    set_default_shell setup_github_interactive
+    setup_network setup_snapper snapshot_pre_bootstrap install_aur_helper
+    install_packages setup_gpu_drivers setup_greeter setup_launcher
+    setup_bluetooth apply_sysctl_tweaks setup_maintenance enable_services
+    link_dotfiles setup_plugin_managers validate_configs set_default_shell
+    setup_github_interactive
 )
 STEP_DESCS=(
     "Enable the [multilib] repository"
     "Write /etc/prymx/prymx.conf and set the hostname"
     "Install the prym CLI and the pacman upgrade guard"
     "Refresh databases and upgrade the system"
+    "Make sure something is managing the network"
     "Btrfs snapshots: snapper, snap-pac, grub-btrfs"
     "Take a pre-bootstrap snapshot"
     "Install the paru AUR helper"
     "Install every packages/*.txt list"
     "Graphics drivers and Vulkan, detected from the hardware"
     "ly display manager"
+    "vicinae, the spotlight-style launcher"
     "Bluetooth, where there is a radio"
     "Gaming sysctl tunables"
-    "Cache trimming, TRIM, mirrors, OOM protection, firewall"
+    "Microcode, cache trimming, TRIM, mirrors, OOM, firewall"
     "System services: docker, pipewire"
     "Link the dotfiles with GNU Stow"
     "Bootstrap the tmux/fish/neovim plugin managers"
+    "Check that the linked configs actually parse"
     "Make fish the login shell"
     "Interactive GitHub: auth, git identity, SSH key"
 )

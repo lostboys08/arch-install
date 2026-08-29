@@ -73,6 +73,7 @@ environment {
 }
 
 // X11 applications, notifications, wallpaper, panel and the polkit agent.
+spawn-at-startup "vicinae" "server"
 spawn-at-startup "xwayland-satellite"
 spawn-at-startup "waybar"
 spawn-at-startup "swaync"
@@ -101,6 +102,8 @@ binds {
     Mod+Shift+Slash { show-hotkey-overlay; }
 
     Mod+Return  { spawn "ghostty"; }
+    // vicinae is the launcher; fuzzel stays as a dependency-free fallback.
+    Mod+Space   { spawn "vicinae" "toggle"; }
     Mod+D       { spawn "fuzzel"; }
     Mod+Alt+L   { spawn "hyprlock"; }
     Mod+N       { spawn "swaync-client" "-t" "-sw"; }

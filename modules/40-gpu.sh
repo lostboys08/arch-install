@@ -43,12 +43,16 @@ setup_gpu_drivers() {
     done <<<"$vendors"
 }
 
+# Matching is on PCI vendor IDs first (10de NVIDIA, 1002/1022 AMD, 8086
+# Intel), with a word-boundary name match as a fallback. Plain substring
+# matching is unsafe here: every "VGA compatible controller" line contains
+# "ati", which made every machine look like it had an AMD card.
 _gpu_vendors() {
     local devices
     devices=$(lspci -nn 2>/dev/null | grep -Ei 'VGA compatible controller|3D controller|Display controller' || true)
-    grep -qi 'nvidia'            <<<"$devices" && echo nvidia
-    grep -Eqi 'amd|ati|radeon'   <<<"$devices" && echo amd
-    grep -qi 'intel'             <<<"$devices" && echo intel
+    grep -Eqi '\[10de:|\bnvidia\b'                        <<<"$devices" && echo nvidia
+    grep -Eqi '\[1002:|\[1022:|\bamd\b|\bati\b|\bradeon\b' <<<"$devices" && echo amd
+    grep -Eqi '\[8086:|\bintel\b'                         <<<"$devices" && echo intel
     return 0
 }
 

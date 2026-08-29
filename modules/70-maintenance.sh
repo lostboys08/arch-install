@@ -9,12 +9,78 @@
 # Provides: setup_maintenance()
 
 setup_maintenance() {
+    _maintenance_microcode
     _maintenance_pacman_cache
     _maintenance_fstrim
     _maintenance_oom
     _maintenance_mirrors
     _maintenance_firewall
+    _maintenance_docker_ports
     _maintenance_power
+}
+
+# Microcode updates are applied by the bootloader at boot; without the package
+# the CPU runs with whatever errata shipped in silicon.
+_maintenance_microcode() {
+    local vendor pkg
+    vendor=$(awk -F': ' '/^vendor_id/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)
+
+    case $vendor in
+        GenuineIntel) pkg=intel-ucode ;;
+        AuthenticAMD) pkg=amd-ucode ;;
+        *) skip "Unknown CPU vendor '${vendor:-unknown}' - skipping microcode"; return 0 ;;
+    esac
+
+    if pkg_installed "$pkg"; then
+        skip "$pkg is already installed"
+        return 0
+    fi
+
+    pacman_install "$pkg" || { record_failure "Could not install $pkg"; return 0; }
+
+    # The package alone is not enough: the bootloader has to load the image.
+    if have_cmd grub-mkconfig && [[ -d /boot/grub ]]; then
+        sudo grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 \
+            && ok "GRUB regenerated with $pkg" \
+            || record_failure "Installed $pkg but could not regenerate the GRUB config"
+    elif [[ -d /boot/loader/entries ]]; then
+        warn "Installed $pkg - add 'initrd /$pkg.img' above the main initrd in your systemd-boot entry"
+    else
+        warn "Installed $pkg - make sure your bootloader loads /boot/$pkg.img"
+    fi
+}
+
+# docker inserts its own iptables rules ahead of ufw's, so a published port
+# is reachable from the LAN whatever `ufw status` says. Binding published
+# ports to loopback by default closes that without breaking containers;
+# anything that genuinely needs to listen wider says so explicitly with
+# `-p 0.0.0.0:8080:80`.
+_maintenance_docker_ports() {
+    have_cmd docker || { skip "docker is not installed - no port hardening needed"; return 0; }
+
+    local conf=/etc/docker/daemon.json
+
+    if sudo test -f "$conf"; then
+        if sudo grep -q '"ip"' "$conf"; then
+            skip "$conf already sets a default publish address"
+        else
+            warn "$conf exists and is not managed by PrymX - not overwriting it"
+            log  'Add   "ip": "127.0.0.1"   to it so published ports do not bypass ufw'
+        fi
+        return 0
+    fi
+
+    install_system_file "$conf" 644 <<'CONF' || { record_failure "Could not write $conf"; return 0; }
+{
+  "ip": "127.0.0.1"
+}
+CONF
+
+    if have_systemd && [[ $(systemctl is-active docker.service 2>/dev/null) == active ]]; then
+        sudo systemctl restart docker.service >/dev/null 2>&1 \
+            && ok "Restarted docker to apply the publish address" \
+            || warn "Could not restart docker; the setting applies at the next restart"
+    fi
 }
 
 # Keep the last 2 versions of every package instead of an unbounded cache.

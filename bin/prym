@@ -70,6 +70,8 @@ ${C_BOLD}COMMANDS${C_RESET}
     ${C_BOLD}clean${C_RESET}               Remove orphaned packages, trim the package
                         cache, run the snapper cleanup algorithms and
                         vacuum old journals.
+    ${C_BOLD}validate${C_RESET}            Check that the linked configs parse (niri,
+                        fish, tmux, ghostty, neovim, waybar, swaync).
     ${C_BOLD}status${C_RESET}              Show what PrymX thinks the machine looks like.
     ${C_BOLD}help${C_RESET}                This message.
 
@@ -271,6 +273,28 @@ cmd_sync() {
     section "Dotfiles"
     stow_dotfiles "$PRYMX_DOTFILES_DIR" "$HOME"
 
+    section "Validating configs"
+    _load_validator && validate_configs
+
+    print_failures
+}
+
+# The validator lives in modules/, which prym does not otherwise load.
+_load_validator() {
+    local module="$PRYMX_REPO/modules/95-validate.sh"
+    if [[ ! -f $module ]]; then
+        warn "Missing $module"
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    source "$module"
+}
+
+cmd_validate() {
+    require_non_root
+    section "$PRYMX_NAME validate"
+    _load_validator || return 1
+    validate_configs
     print_failures
 }
 
@@ -390,6 +414,7 @@ main() {
         rollback) cmd_rollback "$@" ;;
         sync)     cmd_sync "$@" ;;
         clean)    cmd_clean "$@" ;;
+        validate) cmd_validate "$@" ;;
         status)   cmd_status "$@" ;;
         help|"")  usage ;;
         *)        err "Unknown command: $cmd"; usage >&2; return 2 ;;

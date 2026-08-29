@@ -11,6 +11,9 @@
 
 BLUETOOTH_PACKAGES=(bluez bluez-utils blueman)
 
+# Overridable so the test suite can exercise detection without a real adapter.
+BLUETOOTH_SYSFS_GLOB="${BLUETOOTH_SYSFS_GLOB:-/sys/class/bluetooth/*}"
+
 setup_bluetooth() {
     if ! _has_bluetooth_radio && [[ ${PRYMX_FORCE_BLUETOOTH:-0} != 1 ]]; then
         skip "No bluetooth adapter detected - skipping (PRYMX_FORCE_BLUETOOTH=1 overrides)"
@@ -35,7 +38,7 @@ CONF
 
 _has_bluetooth_radio() {
     # A bound adapter shows up here.
-    compgen -G '/sys/class/bluetooth/*' >/dev/null 2>&1 && return 0
+    compgen -G "$BLUETOOTH_SYSFS_GLOB" >/dev/null 2>&1 && return 0
     # An unbound one still shows on the bus.
     have_cmd lsusb && lsusb 2>/dev/null | grep -qi bluetooth && return 0
     have_cmd lspci && lspci 2>/dev/null | grep -qi bluetooth && return 0

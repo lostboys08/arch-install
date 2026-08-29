@@ -23,8 +23,8 @@ That is the whole ethos:
   short, plain-text, and yours to edit. The neovim config ships six plugins,
   not sixty.
 - **High performance.** Wayland with niri, PipeWire, drivers matched to the
-  hardware, gaming sysctl tunables, and an OOM killer so a runaway build never
-  takes the desktop down with it.
+  hardware, CPU microcode, gaming sysctl tunables, and an OOM killer so a
+  runaway build never takes the desktop down with it.
 - **Reversible.** Every upgrade is preceded by a Btrfs snapshot. That is
   enforced by a pacman hook, not by discipline.
 - **Idempotent.** Every step checks before it acts. Run `./bootstrap.sh` on a
@@ -70,6 +70,7 @@ repository, so `git pull` updates the CLI too.
 | `prym rollback [id]` | With no id, lists the snapshots and explains the options. With an id, confirms and hands the rollback to snapper. |
 | `prym sync` | Re-applies the repository: installs anything missing from `packages/*.txt` and re-links the dotfiles with GNU Stow. |
 | `prym clean` | Orphaned packages, package cache trimmed to two versions, paru build cache, snapper cleanup algorithms, journals older than two weeks. |
+| `prym validate` | Parses the linked configs — the same check the `validate` step runs. |
 | `prym status` | Profile, hostname, root filesystem, guard state, snapshot count, and any packages the lists say should be installed but are not. |
 | `prym help` | The same table, from the terminal. |
 
@@ -121,17 +122,21 @@ leave the guard disabled.
 │   ├── 10-snapper.sh         # setup_snapper()            - btrfs snapshots
 │   ├── 20-github.sh          # setup_github_interactive() - gh, git identity, ssh key
 │   ├── 30-sysctl.sh          # apply_sysctl_tweaks()      - 99-gaming.conf
+│   ├── 35-network.sh         # setup_network()            - NetworkManager, if nothing else manages
 │   ├── 40-gpu.sh             # setup_gpu_drivers()        - drivers + vulkan
 │   ├── 50-greeter.sh         # setup_greeter()            - ly
+│   ├── 55-launcher.sh        # setup_launcher()           - vicinae
 │   ├── 60-bluetooth.sh       # setup_bluetooth()          - bluez, where there is a radio
-│   ├── 70-maintenance.sh     # setup_maintenance()        - cache, TRIM, mirrors, OOM, firewall
+│   ├── 70-maintenance.sh     # setup_maintenance()        - microcode, cache, TRIM, mirrors, OOM, firewall
 │   ├── 80-plugins.sh         # setup_plugin_managers()    - TPM, fisher, lazy.nvim
-│   └── 90-prym.sh            # install_prym_cli(), setup_prymx_identity()
+│   ├── 90-prym.sh            # install_prym_cli(), setup_prymx_identity()
+│   └── 95-validate.sh        # validate_configs()         - parse what we just linked
 ├── system/                   # files installed onto the system
 │   ├── pacman-guard.sh       # -> /usr/local/lib/prymx/pacman-guard
 │   └── prymx-guard.hook      # -> /etc/pacman.d/hooks/00-prymx-guard.hook
 ├── dotfiles/                 # one GNU Stow package per directory
 │   ├── fish/  ghostty/  niri/  tmux/  nvim/
+│   └── waybar/  hypr/  swaync/  fuzzel/
 ├── tests/run-tests.sh        # the test suite (no Arch or root required)
 └── .github/workflows/ci.yml  # shellcheck + tests + an Arch smoke test
 ```
@@ -144,18 +149,21 @@ leave the guard disabled.
 | `identity` | Writes `/etc/prymx/prymx.conf` and sets the hostname (default `prymx`) plus the matching `/etc/hosts` entry. |
 | `prym` | Symlinks the CLI and installs the upgrade guard. |
 | `update` | `pacman -Syu`. |
+| `network` | Installs and enables NetworkManager **only** when nothing is already managing the network, so an existing systemd-networkd or iwd setup is left alone. |
 | `snapper` | On a Btrfs root: snapper, snap-pac, grub-btrfs, the `root` config, the timers, and grub-btrfsd when GRUB is the bootloader. |
 | `snapshot` | A `prymx-pre-bootstrap` snapshot before the bulk of the changes. |
 | `aur` | Builds `paru` from `paru-bin` if no AUR helper is present. |
 | `packages` | Every `packages/*.txt`, then the profile list. |
 | `gpu` | Reads `lspci` and installs the matching driver and Vulkan stack. NVIDIA also gets `nvidia_drm.modeset=1` and the initramfs modules. |
 | `greeter` | ly, configured and enabled; it lists the niri session on its own. |
+| `launcher` | vicinae from the AUR (`vicinae-bin`, falling back to `vicinae`). |
 | `bluetooth` | Only where an adapter exists (`PRYMX_FORCE_BLUETOOTH=1` overrides). |
 | `sysctl` | `vm.max_map_count` and `vm.swappiness` for games. |
-| `maintenance` | paccache, fstrim, earlyoom, reflector, ufw, and tlp on the laptop profile. |
+| `maintenance` | CPU microcode, paccache, fstrim, earlyoom, reflector, ufw, the docker publish address, and tlp on the laptop profile. |
 | `services` | `docker.service`, the `docker` group, the PipeWire user units. |
 | `dotfiles` | GNU Stow, `--restow --no-folding`. |
 | `plugins` | TPM, fisher and lazy.nvim, so the configs are a starting point rather than a fixture. |
+| `validate` | Parses every config that was just linked (`niri validate`, `fish -n`, tmux on a throwaway socket, `ghostty +validate-config`, headless neovim, and the waybar/swaync JSON). A broken compositor config is caught here rather than at the greeter. |
 | `shell` | fish becomes the login shell. |
 | `github` | Interactive: `gh auth login`, git identity, an ed25519 key uploaded with `gh ssh-key add`. Last, so the unattended work finishes first. |
 
@@ -204,6 +212,55 @@ stow --dir dotfiles --target "$HOME" --adopt nvim
 git diff        # review what --adopt pulled in
 ```
 
+### The desktop
+
+| Key | Does |
+| --- | --- |
+| `Mod+Space` | vicinae — the launcher. Its server is started by `spawn-at-startup` in the niri config. |
+| `Mod+D` | fuzzel, kept as a dependency-free fallback in case vicinae is not running. |
+| `Mod+Return` | ghostty |
+| `Mod+Alt+L` | hyprlock |
+| `Print` / `Ctrl+Print` / `Alt+Print` | screenshot: region, screen, window |
+
+vicinae is spawned from niri rather than through its systemd user unit: outside
+a uwsm-managed session the unit starts before the compositor's environment
+exists, and applications launched from it then misbehave. vicinae keeps its own
+settings in-app, so PrymX ships no config file for it.
+
+waybar uses the built-in `niri/workspaces` and `niri/window` modules; hypridle
+locks after 5 minutes, blanks at 5.5, and suspends at 30. All of it is Tokyo
+Night, matching ghostty, tmux and the niri focus ring.
+
+### docker and ufw
+
+Yes, this needed handling. docker inserts its own rules into the `DOCKER` and
+`DOCKER-USER` iptables chains, which are evaluated **before** ufw's — so
+`docker run -p 8080:80` is reachable from the whole LAN no matter what `ufw
+status` says. It is a long-standing and genuinely surprising interaction.
+
+PrymX writes `/etc/docker/daemon.json` with:
+
+```json
+{
+  "ip": "127.0.0.1"
+}
+```
+
+That makes the *default* bind address for published ports loopback, so a plain
+`-p 8080:80` is reachable only from the machine itself. Containers keep working
+and nothing about ufw changes; you simply have to be explicit when you do want
+a container on the network:
+
+```sh
+docker run -p 0.0.0.0:8080:80 ...   # deliberately LAN-visible
+```
+
+If `/etc/docker/daemon.json` already exists, PrymX does **not** touch it — it
+prints the line to add and moves on. For fine-grained control (per-port ufw
+rules that docker actually honours) the usual answer is the `ufw-docker`
+`DOCKER-USER` ruleset in `/etc/ufw/after.rules`; PrymX deliberately does not
+edit that file, since a mistake there is a lockout.
+
 ### ghostty and terminfo
 
 ghostty sets `TERM=xterm-ghostty`, and that terminfo entry only exists where
@@ -237,5 +294,9 @@ The suite needs neither Arch nor root: sudo, pacman, paru, systemctl and
 `findmnt` are stubbed on `PATH`, and nothing outside a scratch directory is
 touched. It covers argument handling, the multilib edit, package-list ordering
 and failure handling, idempotent file writes, stow linking/idempotency/conflicts,
-all four states of the upgrade guard, and the `prym` CLI surface. CI runs the
-same suite plus `shellcheck` and a smoke test on an `archlinux` image.
+all four states of the upgrade guard, GPU and bluetooth hardware detection, the
+`prym` CLI surface, and the shipped configs themselves — fish, tmux, waybar and
+swaync are parsed with the real tools, and `niri validate` runs wherever niri is
+installed. Checks whose tool is missing report as skipped rather than passing
+quietly. CI runs the same suite plus `shellcheck`, and an `archlinux` job that
+installs niri, fish and tmux so nothing is skipped there.
