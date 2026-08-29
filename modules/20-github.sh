@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
+[[ -n ${PRYMX_COMMON_SOURCED:-} ]] || \
+    source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
 #
 # 20-github.sh - interactive GitHub CLI, git identity and SSH key setup.
-# Sourced by bootstrap.sh. Provides: setup_github_interactive()
-
-if ! declare -F log >/dev/null 2>&1; then
-    log()  { printf '  -> %s\n' "$*"; }
-    ok()   { printf '  ok %s\n' "$*"; }
-    warn() { printf '   ! %s\n' "$*" >&2; }
-    err()  { printf '   x %s\n' "$*" >&2; }
-fi
+# Provides: setup_github_interactive()
 
 SSH_KEY_PATH="$HOME/.ssh/id_ed25519"
 
 setup_github_interactive() {
-    if ! command -v gh >/dev/null 2>&1; then
+    if ! have_cmd gh; then
         warn "github-cli (gh) is not installed - skipping GitHub setup"
         return 0
     fi
-    if [[ ! -t 0 ]]; then
-        warn "No interactive terminal - skipping GitHub setup (re-run bootstrap.sh from a TTY)"
+    if ! have_tty; then
+        warn "No interactive terminal - skipping GitHub setup (re-run from a TTY)"
         return 0
     fi
 
@@ -28,12 +23,22 @@ setup_github_interactive() {
     _ssh_key_setup
 }
 
+# bootstrap.sh tees its output to a log file, so stdout is a pipe. gh's
+# interactive login needs a real terminal; give it one when we have it.
+_run_interactive() {
+    if [[ -c /dev/tty ]]; then
+        "$@" < /dev/tty > /dev/tty 2>&1
+    else
+        "$@"
+    fi
+}
+
 _gh_authenticate() {
     if gh auth status >/dev/null 2>&1; then
-        ok "Already authenticated with GitHub"
+        skip "Already authenticated with GitHub"
     else
         log "Not authenticated - starting 'gh auth login'"
-        if ! gh auth login; then
+        if ! _run_interactive gh auth login; then
             err "gh auth login failed or was cancelled"
             return 1
         fi
@@ -41,7 +46,7 @@ _gh_authenticate() {
     fi
 
     if gh auth setup-git; then
-        ok "Configured git to use gh as a credential helper"
+        ok "git is configured to use gh as a credential helper"
     else
         warn "gh auth setup-git failed"
     fi
@@ -52,7 +57,7 @@ _git_identity() {
 
     name=$(git config --global --get user.name || true)
     if [[ -z $name ]]; then
-        read -r -p "  git user.name : " name
+        read -r -p "  git user.name : " name || true
         if [[ -n $name ]]; then
             git config --global user.name "$name"
             ok "Set git user.name to '$name'"
@@ -60,12 +65,12 @@ _git_identity() {
             warn "git user.name left unset"
         fi
     else
-        ok "git user.name is already set to '$name'"
+        skip "git user.name is already '$name'"
     fi
 
     email=$(git config --global --get user.email || true)
     if [[ -z $email ]]; then
-        read -r -p "  git user.email: " email
+        read -r -p "  git user.email: " email || true
         if [[ -n $email ]]; then
             git config --global user.email "$email"
             ok "Set git user.email to '$email'"
@@ -73,7 +78,7 @@ _git_identity() {
             warn "git user.email left unset"
         fi
     else
-        ok "git user.email is already set to '$email'"
+        skip "git user.email is already '$email'"
     fi
 }
 
@@ -83,10 +88,10 @@ _ssh_key_setup() {
 
     local comment
     comment=$(git config --global --get user.email || true)
-    [[ -n $comment ]] || comment="${USER:-$(id -un)}@$(hostname)"
+    [[ -n $comment ]] || comment="$USER@$(hostname)"
 
     if [[ -f $SSH_KEY_PATH ]]; then
-        ok "SSH key already exists at $SSH_KEY_PATH"
+        skip "SSH key already exists at $SSH_KEY_PATH"
     else
         log "Generating an ed25519 SSH key at $SSH_KEY_PATH"
         if ! ssh-keygen -t ed25519 -C "$comment" -f "$SSH_KEY_PATH" -N ""; then
@@ -105,13 +110,13 @@ _ssh_key_upload() {
     local pub_file="$SSH_KEY_PATH.pub"
     [[ -f $pub_file ]] || { warn "No public key at $pub_file - nothing to upload"; return 0; }
 
-    # The key body (field 2) is what GitHub stores; compare against it so the
-    # key is not uploaded twice under a different title.
+    # The key body (field 2) is what GitHub stores; compare against it so a
+    # re-run does not upload the same key under a new title.
     local key_body
     key_body=$(awk '{print $2}' "$pub_file")
 
     if gh ssh-key list 2>/dev/null | grep -qF "$key_body"; then
-        ok "This SSH key is already on the GitHub account"
+        skip "This SSH key is already on the GitHub account"
         return 0
     fi
 
@@ -121,6 +126,6 @@ _ssh_key_upload() {
     if gh ssh-key add "$pub_file" --title "$title"; then
         ok "SSH key uploaded"
     else
-        warn "Could not upload the SSH key (the 'admin:public_key' scope may be missing; try: gh auth refresh -h github.com -s admin:public_key)"
+        warn "Could not upload the SSH key (missing scope? try: gh auth refresh -h github.com -s admin:public_key)"
     fi
 }

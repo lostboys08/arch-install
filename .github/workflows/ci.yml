@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    name: shellcheck + test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck stow
+
+      - name: shellcheck
+        run: |
+          shellcheck -x -S warning \
+            bootstrap.sh lib/common.sh bin/prym \
+            system/pacman-guard.sh modules/*.sh tests/run-tests.sh
+
+      - name: Test suite
+        run: ./tests/run-tests.sh
+
+  arch-smoke:
+    name: smoke test on Arch
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install tooling
+        run: pacman -Sy --needed --noconfirm git stow sudo
+
+      - uses: actions/checkout@v4
+
+      - name: Plan is printable on a real Arch image
+        run: |
+          ./bootstrap.sh --list
+          ./bootstrap.sh --dry-run
+          ./bootstrap.sh --dry-run --profile laptop --only gpu,greeter,bluetooth
+
+      - name: Test suite as an unprivileged user
+        run: |
+          useradd -m prymx
+          chown -R prymx:prymx .
+          runuser -u prymx -- ./tests/run-tests.sh

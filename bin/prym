@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+#
+# prym - PrymX system lifecycle helper.
+#
+# Installed to /usr/local/bin/prym as a symlink into the PrymX repository by
+# bootstrap.sh. Run as your normal user; it calls sudo where it needs to.
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Locate the repository we were installed from, then load the shared library.
+# ---------------------------------------------------------------------------
+
+_resolve_repo() {
+    # 1. The path bootstrap.sh recorded.
+    if [[ -r /etc/prymx/prymx.conf ]]; then
+        local recorded
+        recorded=$(sed -n 's/^PRYMX_REPO="\(.*\)"$/\1/p' /etc/prymx/prymx.conf | head -n1)
+        if [[ -n $recorded && -d $recorded/lib ]]; then
+            printf '%s\n' "$recorded"
+            return 0
+        fi
+    fi
+    # 2. Follow the symlink we were invoked through.
+    local self
+    self=$(readlink -f "${BASH_SOURCE[0]}")
+    local guess
+    guess=$(cd -- "$(dirname -- "$self")/.." && pwd)
+    if [[ -d $guess/lib ]]; then
+        printf '%s\n' "$guess"
+        return 0
+    fi
+    return 1
+}
+
+if ! PRYMX_REPO=$(_resolve_repo); then
+    printf 'prym: cannot locate the PrymX repository.\n' >&2
+    printf '      Re-run bootstrap.sh, or set PRYMX_REPO to the checkout.\n' >&2
+    exit 1
+fi
+export PRYMX_REPO
+
+# shellcheck source=lib/common.sh
+source "$PRYMX_REPO/lib/common.sh"
+prymx_load_config
+
+PRYMX_PKG_DIR="$PRYMX_REPO/packages"
+PRYMX_DOTFILES_DIR="$PRYMX_REPO/dotfiles"
+
+ASSUME_YES=0
+
+# ---------------------------------------------------------------------------
+
+usage() {
+    cat <<USAGE
+${C_BOLD}prym${C_RESET} - $PRYMX_NAME system lifecycle helper (v$PRYMX_VERSION)
+
+${C_BOLD}USAGE${C_RESET}
+    prym <command> [options]
+
+${C_BOLD}COMMANDS${C_RESET}
+    ${C_BOLD}update${C_RESET}              Snapshot the root subvolume, then run a full
+                        system upgrade (paru -Syu) and refresh the GRUB
+                        snapshot entries.
+    ${C_BOLD}snapshot${C_RESET} [desc]     Take an immediate manual snapshot of /,
+                        with an optional description.
+    ${C_BOLD}rollback${C_RESET} [id]       List snapshots, or roll back to one.
+    ${C_BOLD}sync${C_RESET}                Re-apply the repository: install anything
+                        missing from packages/*.txt and re-link the
+                        dotfiles with GNU Stow.
+    ${C_BOLD}clean${C_RESET}               Remove orphaned packages, trim the package
+                        cache, run the snapper cleanup algorithms and
+                        vacuum old journals.
+    ${C_BOLD}status${C_RESET}              Show what PrymX thinks the machine looks like.
+    ${C_BOLD}help${C_RESET}                This message.
+
+${C_BOLD}OPTIONS${C_RESET}
+    -y, --yes           Do not ask for confirmation (passes --noconfirm).
+    -h, --help          This message.
+    -V, --version       Print the PrymX version.
+
+${C_BOLD}NOTES${C_RESET}
+    Direct \`pacman -Syu\` / \`paru -Syu\` upgrades are blocked by a pacman
+    hook so that no upgrade happens without a snapshot. Use \`prym update\`,
+    or opt out for one command with:
+
+        sudo PRYMX_ALLOW_PACMAN=1 pacman -Syu
+
+    Repository: $PRYMX_REPO
+    Profile:    $PRYMX_PROFILE
+USAGE
+}
+
+require_non_root() {
+    is_root && die "Do not run prym as root; it uses sudo where it needs to."
+    return 0
+}
+
+require_arch() {
+    is_arch || die "prym targets Arch Linux."
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_update() {
+    require_non_root
+    require_arch
+
+    section "$PRYMX_NAME update"
+
+    prymx_lock_acquire || die "Could not take the PrymX pacman lock."
+
+    snapshot_or_confirm "prym-pre-update-$(date +%F-%T)" || return 1
+
+    log "Upgrading the system"
+    local paru_args=(-Syu)
+    (( ASSUME_YES )) && paru_args+=(--noconfirm)
+
+    if have_cmd paru; then
+        paru "${paru_args[@]}" || record_failure "paru -Syu did not complete cleanly"
+    else
+        sudo pacman "${paru_args[@]}" || record_failure "pacman -Syu did not complete cleanly"
+    fi
+
+    refresh_grub_snapshots
+    report_pacnew
+
+    prymx_lock_release
+    print_failures
+}
+
+# Take the pre-change snapshot, or make the user say so explicitly when the
+# machine cannot snapshot at all.
+snapshot_or_confirm() {
+    local desc=$1
+
+    if is_btrfs_root && have_cmd snapper; then
+        snapper_snapshot "$desc" && return 0
+        (( ASSUME_YES )) && return 0
+        confirm "Snapshot failed. Upgrade anyway?" && return 0
+        err "Aborted."
+        return 1
+    fi
+
+    if ! is_btrfs_root; then
+        skip "Root is not btrfs - upgrading without a snapshot"
+        return 0
+    fi
+
+    warn "snapper is not installed - no snapshot will be taken"
+    (( ASSUME_YES )) && return 0
+    confirm "Upgrade anyway?" && return 0
+    err "Aborted."
+    return 1
+}
+
+refresh_grub_snapshots() {
+    have_cmd grub-mkconfig || return 0
+    [[ -d /boot/grub ]] || return 0
+
+    # grub-btrfsd regenerates the snapshot submenu on its own; when it is not
+    # running, do it once here so the new snapshot is bootable.
+    if have_systemd && [[ $(systemctl is-active grub-btrfsd 2>/dev/null) == active ]]; then
+        skip "grub-btrfsd is running - snapshot entries are managed for us"
+        return 0
+    fi
+
+    log "Regenerating the GRUB configuration"
+    sudo grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 \
+        && ok "GRUB configuration regenerated" \
+        || warn "Could not regenerate the GRUB configuration"
+}
+
+report_pacnew() {
+    local files=()
+    mapfile -t files < <(sudo find /etc \( -name '*.pacnew' -o -name '*.pacsave' \) 2>/dev/null | head -20)
+    (( ${#files[@]} )) || return 0
+    warn "Configuration files need merging:"
+    printf '     %s\n' "${files[@]}" >&2
+    have_cmd pacdiff && log "Merge them with: sudo DIFFPROG=nvim pacdiff"
+    return 0
+}
+
+cmd_snapshot() {
+    require_non_root
+    require_arch
+
+    local desc=${1:-"prym-manual-$(date +%F-%T)"}
+    section "$PRYMX_NAME snapshot"
+
+    is_btrfs_root || die "Root filesystem is not btrfs; snapper snapshots are unavailable."
+    have_cmd snapper || die "snapper is not installed. Run: prym sync"
+
+    snapper_snapshot "$desc"
+    print_failures
+}
+
+cmd_rollback() {
+    require_non_root
+    require_arch
+
+    section "$PRYMX_NAME rollback"
+
+    is_btrfs_root || die "Root filesystem is not btrfs; there is nothing to roll back."
+    have_cmd snapper || die "snapper is not installed."
+
+    local target=${1:-}
+
+    if [[ -z $target ]]; then
+        sudo snapper -c root list
+        cat <<HELP
+
+  To roll the root subvolume back to one of these snapshots:
+
+      prym rollback <id>          then reboot
+
+  What that does: snapper makes the chosen snapshot the new default
+  subvolume and takes a snapshot of the current state first, so the
+  rollback itself is undoable.
+
+  To inspect or undo a single change instead of the whole system:
+
+      sudo snapper -c root status <id>..0      what changed since <id>
+      sudo snapper -c root undochange <id>..0  revert just those files
+
+  If the system does not boot, pick a snapshot from the GRUB
+  "Arch Linux snapshots" submenu (maintained by grub-btrfsd), then run
+  \`sudo snapper rollback\` from inside it.
+HELP
+        return 0
+    fi
+
+    [[ $target =~ ^[0-9]+$ ]] || die "Not a snapshot id: $target"
+
+    if ! sudo snapper -c root list | awk '{print $1}' | grep -qx "$target"; then
+        die "Snapshot $target does not exist. Run 'prym rollback' to list them."
+    fi
+
+    sudo snapper -c root list | awk -v id="$target" 'NR<=2 || $1==id'
+    warn "This makes snapshot $target the default root subvolume at the next boot."
+
+    if (( ! ASSUME_YES )) && ! confirm "Roll back to snapshot $target?"; then
+        err "Aborted."
+        return 1
+    fi
+
+    if sudo snapper -c root rollback "$target"; then
+        ok "Rolled back to snapshot $target."
+        log "Reboot to boot into it: systemctl reboot"
+    else
+        err "snapper rollback failed."
+        log "If this system boots from a snapshot already, run 'sudo snapper rollback' with no id."
+        return 1
+    fi
+}
+
+cmd_sync() {
+    require_non_root
+    require_arch
+
+    section "$PRYMX_NAME sync"
+    log "Repository: $PRYMX_REPO"
+    log "Profile:    $PRYMX_PROFILE"
+
+    prymx_lock_acquire || die "Could not take the PrymX pacman lock."
+    install_package_lists "$PRYMX_PKG_DIR" "$PRYMX_PROFILE"
+    prymx_lock_release
+
+    section "Dotfiles"
+    stow_dotfiles "$PRYMX_DOTFILES_DIR" "$HOME"
+
+    print_failures
+}
+
+cmd_clean() {
+    require_non_root
+    require_arch
+
+    section "$PRYMX_NAME clean"
+
+    local orphans=()
+    mapfile -t orphans < <(pacman -Qtdq 2>/dev/null || true)
+    if (( ${#orphans[@]} )); then
+        log "Removing orphaned packages:"
+        printf '     %s\n' "${orphans[@]}"
+        if (( ASSUME_YES )) || confirm "Remove these?"; then
+            sudo pacman -Rns --noconfirm "${orphans[@]}" \
+                || record_failure "Could not remove all orphaned packages"
+        else
+            skip "Left orphans in place"
+        fi
+    else
+        skip "No orphaned packages"
+    fi
+
+    if have_cmd paccache; then
+        log "Trimming the package cache to the last 2 versions"
+        sudo paccache -rk2 || record_failure "paccache failed"
+        sudo paccache -ruk0 || true
+    else
+        warn "pacman-contrib is not installed - skipping paccache"
+    fi
+
+    if have_cmd paru; then
+        log "Cleaning the paru/AUR build cache"
+        paru -Sc --noconfirm >/dev/null || record_failure "paru -Sc failed"
+    fi
+
+    if have_cmd snapper && is_btrfs_root; then
+        local algo
+        for algo in number timeline empty-pre-post; do
+            sudo snapper -c root cleanup "$algo" >/dev/null 2>&1 \
+                && ok "snapper cleanup: $algo" \
+                || warn "snapper cleanup '$algo' failed"
+        done
+    fi
+
+    if have_systemd; then
+        log "Vacuuming journals older than 2 weeks"
+        sudo journalctl --vacuum-time=2weeks >/dev/null 2>&1 \
+            && ok "Journals vacuumed" \
+            || warn "Could not vacuum journals"
+    fi
+
+    print_failures
+}
+
+cmd_status() {
+    require_arch
+    section "$PRYMX_NAME status"
+
+    printf '  %-22s %s\n' "version"    "$PRYMX_VERSION"
+    printf '  %-22s %s\n' "repository" "$PRYMX_REPO"
+    printf '  %-22s %s\n' "profile"    "$PRYMX_PROFILE"
+    printf '  %-22s %s\n' "hostname"   "$(hostnamectl --static 2>/dev/null || hostname)"
+    printf '  %-22s %s\n' "root fs"    "$(findmnt -no FSTYPE / 2>/dev/null || echo unknown)"
+
+    local guard="missing"
+    [[ -f /etc/pacman.d/hooks/00-prymx-guard.hook ]] && guard="active"
+    printf '  %-22s %s\n' "upgrade guard" "$guard"
+
+    if have_cmd snapper && is_btrfs_root; then
+        local count
+        count=$(sudo snapper -c root list 2>/dev/null | awk 'NR>2' | wc -l)
+        printf '  %-22s %s\n' "root snapshots" "$count"
+    fi
+
+    local missing=() file pkg
+    while IFS= read -r file; do
+        while IFS= read -r pkg; do
+            [[ -n $pkg ]] || continue
+            pkg_installed "$pkg" || missing+=("$pkg")
+        done < "$file"
+    done < <(package_lists "$PRYMX_PKG_DIR")
+
+    if (( ${#missing[@]} )); then
+        printf '  %-22s %s\n' "packages missing" "${#missing[@]}"
+        printf '     %s\n' "${missing[@]}"
+        log "Install them with: prym sync"
+    else
+        printf '  %-22s %s\n' "packages missing" "none"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+
+main() {
+    local args=()
+    while (( $# )); do
+        case $1 in
+            -y|--yes)     ASSUME_YES=1 ;;
+            -h|--help)    usage; return 0 ;;
+            -V|--version) printf '%s %s\n' "$PRYMX_NAME" "$PRYMX_VERSION"; return 0 ;;
+            --)           shift; args+=("$@"); break ;;
+            -*)           err "Unknown option: $1"; usage >&2; return 2 ;;
+            *)            args+=("$1") ;;
+        esac
+        shift
+    done
+
+    set -- "${args[@]:-}"
+    local cmd=${1:-help}
+    shift || true
+
+    case $cmd in
+        update)   cmd_update "$@" ;;
+        snapshot) cmd_snapshot "$@" ;;
+        rollback) cmd_rollback "$@" ;;
+        sync)     cmd_sync "$@" ;;
+        clean)    cmd_clean "$@" ;;
+        status)   cmd_status "$@" ;;
+        help|"")  usage ;;
+        *)        err "Unknown command: $cmd"; usage >&2; return 2 ;;
+    esac
+}
+
+# Executed, not sourced: the test suite sources this file for its functions.
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
+    main "$@"
+fi

@@ -1,0 +1,12 @@
+# Machine-local dotfile overrides (referenced by the shipped configs).
+dotfiles/*/.config/*/local
+dotfiles/*/.config/*/local.*
+dotfiles/*/.config/*/lua/local.lua
+
+# Backups left behind by editors and by our own sed edits.
+*.bak
+*.orig
+*~
+
+# Plugin managers install into their own directories, never into the repo.
+dotfiles/tmux/.config/tmux/plugins/

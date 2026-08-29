@@ -1,0 +1,14 @@
+# Installed to /etc/pacman.d/hooks/00-prymx-guard.hook by PrymX.
+# Routes package upgrades through `prym update` so every upgrade is preceded
+# by a Btrfs snapshot.
+
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = PrymX: checking that this upgrade came from `prym`...
+When = PreTransaction
+Exec = /usr/local/lib/prymx/pacman-guard
+AbortOnFail
