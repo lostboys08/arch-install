@@ -120,10 +120,21 @@ cmd_update() {
     local paru_args=(-Syu)
     (( ASSUME_YES )) && paru_args+=(--noconfirm)
 
-    if have_cmd paru; then
+    if paru_usable; then
         paru "${paru_args[@]}" || record_failure "paru -Syu did not complete cleanly"
     else
+        if have_cmd paru; then
+            warn "paru is unusable: $(paru_problem)"
+            warn "Upgrading with pacman only - AUR packages are being left behind."
+        fi
         sudo pacman "${paru_args[@]}" || record_failure "pacman -Syu did not complete cleanly"
+    fi
+
+    # An upgrade can move libalpm out from under paru, so re-check afterwards
+    # rather than trusting what we found before it ran.
+    paru_health_reset
+    if have_cmd paru && ! paru_usable; then
+        record_failure "paru is unusable: $(paru_problem) - $PRYMX_PARU_REPAIR_HINT"
     fi
 
     refresh_grub_snapshots
@@ -360,6 +371,16 @@ cmd_status() {
     printf '  %-22s %s\n' "profile"    "$PRYMX_PROFILE"
     printf '  %-22s %s\n' "hostname"   "$(hostnamectl --static 2>/dev/null || hostname)"
     printf '  %-22s %s\n' "root fs"    "$(findmnt -no FSTYPE / 2>/dev/null || echo unknown)"
+
+    local helper="not installed"
+    if have_cmd paru; then
+        if paru_usable; then
+            helper="paru $(paru --version 2>/dev/null | awk 'NR==1{print $2}')"
+        else
+            helper="BROKEN - $(paru_problem)"
+        fi
+    fi
+    printf '  %-22s %s\n' "aur helper" "$helper"
 
     local guard="missing"
     [[ -f /etc/pacman.d/hooks/00-prymx-guard.hook ]] && guard="active"

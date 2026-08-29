@@ -102,6 +102,14 @@ case "$1" in
 esac
 EOF
 
+cat > "$STUB/ldd" <<'EOF'
+#!/bin/sh
+# Reports the libalpm soname the "binary" was linked against, so the health
+# probe can be exercised without a real paru.
+[ -n "${STUB_PARU_ALPM:-}" ] || { echo "	not a dynamic executable"; exit 1; }
+echo "	libalpm.so.$STUB_PARU_ALPM => /usr/lib/libalpm.so.$STUB_PARU_ALPM (0x0)"
+EOF
+
 cat > "$STUB/systemctl" <<'EOF'
 #!/bin/sh
 echo "[stub] systemctl $*" >&2
@@ -560,6 +568,107 @@ if it "every shell script parses"; then
         bash -n "$f" 2>/dev/null || bad+="$f "
     done < <(find "$REPO" -path "$REPO/.git" -prune -o -type f \( -name '*.sh' -o -name prym \) -print)
     assert_eq "$bad" "" && pass
+fi
+
+printf '\n%s AUR helper health%s\n' "$D" "$N"
+
+# A fake /usr/lib holding whichever libalpm soname the test wants.
+fake_libdir() {
+    local dir="$WORK/lib-$1"
+    mkdir -p "$dir"
+    : > "$dir/libalpm.so.$1"
+    : > "$dir/libalpm.so.$1.0.1"
+    ln -sf "libalpm.so.$1" "$dir/libalpm.so"
+    printf '%s\n' "$dir"
+}
+
+if it "system_alpm_soname reads the soname off the installed libalpm"; then
+    out=$(PRYMX_LIBDIR=$(fake_libdir 16) system_alpm_soname)
+    assert_eq "$out" "16" && pass
+fi
+
+if it "system_alpm_soname is empty when there is no libalpm"; then
+    out=$(PRYMX_LIBDIR="$WORK/nothing-here" system_alpm_soname)
+    assert_eq "$out" "" && pass
+fi
+
+if it "paru_usable accepts a paru built against the installed libalpm"; then
+    paru_health_reset
+    out=$(STUB_PARU_ALPM=16 PRYMX_LIBDIR=$(fake_libdir 16) paru_problem)
+    assert_eq "$out" "" && pass
+fi
+
+if it "paru_problem names a libalpm soname mismatch"; then
+    paru_health_reset
+    out=$(STUB_PARU_ALPM=15 PRYMX_LIBDIR=$(fake_libdir 16) paru_problem)
+    assert_contains "$out" "libalpm.so.15" \
+        && assert_contains "$out" "libalpm.so.16" && pass
+    paru_health_reset
+fi
+
+if it "paru_problem reports a paru that will not run at all"; then
+    broken="$WORK/broken-bin"; mkdir -p "$broken"
+    cat > "$broken/paru" <<'BROKEN'
+#!/bin/sh
+echo "paru: error while loading shared libraries: libalpm.so.15" >&2
+exit 127
+BROKEN
+    chmod +x "$broken/paru"
+    paru_health_reset
+    out=$(PATH="$broken:$PATH" paru_problem)
+    assert_contains "$out" "libalpm.so.15" && pass
+    paru_health_reset
+fi
+
+if it "paru_problem is empty for a healthy paru and cached"; then
+    paru_health_reset
+    paru_usable && assert_eq "$(paru_problem)" "" && pass
+fi
+
+if it "install_package_lists refuses to run against a broken paru"; then
+    pkgdir="$WORK/pkg-broken"; mkdir -p "$pkgdir"
+    printf 'a\nb\n' > "$pkgdir/core.txt"
+    PRYMX_FAILURES=()
+    paru_health_reset
+    out=$(STUB_PARU_ALPM=15 PRYMX_LIBDIR=$(fake_libdir 16) \
+          install_package_lists "$pkgdir" 2>&1); rc=$?
+    paru_health_reset
+    assert_fails "$rc" \
+        && assert_contains "$out" "libalpm" \
+        && assert_contains "$out" "--only aur" \
+        && assert_not_contains "$out" "[stub] paru" && pass
+fi
+
+if it "aur_install falls back to pacman when paru is broken"; then
+    paru_health_reset
+    out=$(STUB_PARU_ALPM=15 PRYMX_LIBDIR=$(fake_libdir 16) \
+          PACMAN_INSTALLED="" aur_install ripgrep 2>&1)
+    paru_health_reset
+    assert_contains "$out" "[stub] pacman" \
+        && assert_not_contains "$out" "[stub] paru" && pass
+fi
+
+if it "install_aur_helper rebuilds instead of skipping a broken paru"; then
+    PRYMX_FAILURES=()
+    paru_health_reset
+    out=$(STUB_PARU_ALPM=15 PRYMX_LIBDIR=$(fake_libdir 16) \
+          install_aur_helper 2>&1); rc=$?
+    paru_health_reset
+    # The build itself cannot succeed under the stubs; what matters is that the
+    # step noticed the mismatch and tried, rather than reporting paru as fine.
+    assert_contains "$out" "unusable" \
+        && assert_not_contains "$out" "already installed" && pass
+fi
+
+if it "install_aur_helper skips a healthy paru"; then
+    paru_health_reset
+    out=$(install_aur_helper 2>&1); rc=$?
+    paru_health_reset
+    assert_ok "$rc" && assert_contains "$out" "already installed" && pass
+fi
+
+if it "the aur module tries the source package after the binary one"; then
+    assert_eq "${AUR_HELPER_PKGS[*]}" "paru-bin paru" && pass
 fi
 
 if it "package lists contain bare package names only"; then
