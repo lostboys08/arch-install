@@ -199,12 +199,85 @@ pacman_install() {
     sudo pacman -S --needed --noconfirm "${missing[@]}"
 }
 
+# ---------------------------------------------------------------------------
+# AUR helper health
+#
+# paru links against libalpm, and libalpm bumps its soname on most pacman
+# releases (libalpm.so.15 -> libalpm.so.16). A paru built against the previous
+# soname stops working the instant pacman is upgraded past it: it dies before
+# it can install anything, so every package list fails at once and the only
+# clue is a version mismatch. paru-bin is the usual casualty - it is prebuilt
+# by its maintainer, so it lags a soname bump by hours or days - but a
+# source-built paru breaks the same way once pacman moves underneath it.
+#
+# Nothing here repairs paru; install_aur_helper() in modules/00-aur.sh does
+# that. These helpers only let the rest of the run notice and say so once.
+# ---------------------------------------------------------------------------
+
+# Overridable so the tests can point at a fake lib directory.
+PRYMX_LIBDIR="${PRYMX_LIBDIR:-/usr/lib}"
+
+PRYMX_PARU_REPAIR_HINT="rebuild it with './bootstrap.sh --only aur'"
+
+# The libalpm soname this system provides, e.g. '16' for libalpm.so.16.
+system_alpm_soname() {
+    local f v best=""
+    for f in "$PRYMX_LIBDIR"/libalpm.so.*; do
+        [[ -e $f ]] || continue
+        v=${f##*/libalpm.so.}
+        [[ $v =~ ^[0-9]+$ ]] || continue
+        (( v > ${best:-0} )) && best=$v
+    done
+    printf '%s' "$best"
+}
+
+# The libalpm soname paru was linked against, e.g. '15'.
+paru_alpm_soname() {
+    local bin out v
+    bin=$(command -v paru 2>/dev/null) || return 0
+    out=$(ldd "$bin" 2>/dev/null) || return 0
+    v=$(sed -n 's/.*libalpm\.so\.\([0-9][0-9]*\).*/\1/p' <<<"$out")
+    printf '%s' "${v%%$'\n'*}"
+}
+
+# Empty output means paru works. Anything else is why it does not.
+_paru_probe() {
+    have_cmd paru || { printf 'paru is not installed'; return 0; }
+
+    local out rc=0
+    out=$(paru --version 2>&1) || rc=$?
+    if (( rc != 0 )); then
+        printf 'paru --version exited %s: %s' "$rc" "$(head -n1 <<<"$out")"
+        return 0
+    fi
+
+    local built system
+    built=$(paru_alpm_soname)
+    system=$(system_alpm_soname)
+    if [[ -n $built && -n $system && $built != "$system" ]]; then
+        printf 'paru was built against libalpm.so.%s but this system has libalpm.so.%s' \
+            "$built" "$system"
+    fi
+}
+
+# Cached: several steps ask, and the probe forks.
+paru_problem() {
+    [[ -n ${PRYMX_PARU_PROBLEM+x} ]] || PRYMX_PARU_PROBLEM=$(_paru_probe)
+    printf '%s' "$PRYMX_PARU_PROBLEM"
+}
+paru_usable()       { [[ -z $(paru_problem) ]]; }
+paru_health_reset() { unset PRYMX_PARU_PROBLEM; }
+
 # Anything that may live in the AUR, via paru when it is available.
 aur_install() {
     (( $# )) || return 0
-    if have_cmd paru; then
+    if paru_usable; then
         paru -S --needed --noconfirm "$@"
     else
+        if have_cmd paru; then
+            warn "paru is unusable: $(paru_problem)"
+            warn "Falling back to pacman; $PRYMX_PARU_REPAIR_HINT"
+        fi
         pacman_install "$@"
     fi
 }
@@ -232,7 +305,10 @@ package_lists() {
 install_package_lists() {
     local dir=$1 profile=${2:-} file name
 
-    have_cmd paru || { record_failure "paru is not installed; cannot install package lists"; return 1; }
+    if ! paru_usable; then
+        record_failure "Cannot install package lists: $(paru_problem) - $PRYMX_PARU_REPAIR_HINT"
+        return 1
+    fi
 
     while IFS= read -r file; do
         name=$(basename "$file" .txt)

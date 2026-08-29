@@ -152,7 +152,7 @@ leave the guard disabled.
 | `network` | Installs and enables NetworkManager **only** when nothing is already managing the network, so an existing systemd-networkd or iwd setup is left alone. |
 | `snapper` | On a Btrfs root: snapper, snap-pac, grub-btrfs, the `root` config, the timers, and grub-btrfsd when GRUB is the bootloader. |
 | `snapshot` | A `prymx-pre-bootstrap` snapshot before the bulk of the changes. |
-| `aur` | Builds `paru` from `paru-bin` if no AUR helper is present. |
+| `aur` | Installs `paru`, and checks that the `paru` on the machine actually runs — see [When paru breaks](#when-paru-breaks). |
 | `packages` | Every `packages/*.txt`, then the profile list. |
 | `gpu` | Reads `lspci` and installs the matching driver and Vulkan stack. NVIDIA also gets `nvidia_drm.modeset=1` and the initramfs modules. |
 | `greeter` | ly, configured and enabled; it lists the niri session on its own. |
@@ -170,6 +170,38 @@ leave the guard disabled.
 Failures in individual steps are collected and printed in a summary; only
 genuinely fatal problems (not Arch, no sudo, a failed `pacman -Syu`) stop the
 run.
+
+### When paru breaks
+
+`paru` is linked against `libalpm`, and `libalpm` bumps its soname on most
+pacman releases (`libalpm.so.15` → `libalpm.so.16`). A `paru` built against the
+older soname stops working the moment pacman moves past it: it exits before it
+can install anything, so every package list fails at once and the only clue is
+a version mismatch.
+
+`paru-bin` is the usual casualty — it is prebuilt by its maintainer, so it lags
+a soname bump by hours or days — but a source-built `paru` breaks the same way
+when pacman is upgraded and `paru` is not rebuilt.
+
+The `aur` step handles this rather than assuming the helper works:
+
+- An already-installed `paru` is only accepted after it runs and its
+  `libalpm` soname matches the installed one. A broken one is removed and
+  rebuilt instead of skipped.
+- Candidates are tried in order: `paru-bin` first, because it is a prebuilt
+  binary and costs seconds instead of a Rust build, then `paru`, which
+  `makepkg` links against whatever `libalpm` is installed right now.
+
+So the fix for a mismatch is to re-run the one step:
+
+```bash
+./bootstrap.sh --only aur
+```
+
+Elsewhere the mismatch is reported once rather than as a wall of failures:
+`packages` refuses to run and says why, `aur_install` falls back to pacman for
+anything in the repositories, `prym update` upgrades with pacman and tells you
+the AUR is being left behind, and `prym status` shows the helper as `BROKEN`.
 
 ### Hardware and existing setup
 
