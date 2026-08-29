@@ -1,0 +1,4 @@
+brightnessctl
+acpi
+powertop
+upower

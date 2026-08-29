@@ -1,0 +1,64 @@
+/* ~/.config/waybar/style.css  (PrymX - Tokyo Night) */
+
+* {
+  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-size: 13px;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+}
+
+window#waybar {
+  background: rgba(26, 27, 38, 0.92);
+  color: #c0caf5;
+}
+
+#workspaces { margin-left: 6px; }
+
+#workspaces button {
+  padding: 0 8px;
+  color: #565f89;
+  background: transparent;
+}
+
+#workspaces button.active {
+  color: #7aa2f7;
+}
+
+#workspaces button:hover {
+  background: #283457;
+  color: #c0caf5;
+}
+
+#window {
+  color: #a9b1d6;
+  margin-left: 6px;
+}
+
+#clock {
+  color: #c0caf5;
+  font-weight: bold;
+}
+
+#tray,
+#pulseaudio,
+#network,
+#cpu,
+#memory,
+#battery {
+  padding: 0 10px;
+  color: #a9b1d6;
+}
+
+#pulseaudio.muted    { color: #565f89; }
+#network.disconnected { color: #f7768e; }
+#battery.warning     { color: #e0af68; }
+#battery.critical    { color: #f7768e; }
+#battery.charging    { color: #9ece6a; }
+
+tooltip {
+  background: #1a1b26;
+  border: 1px solid #3b4261;
+}
+
+tooltip label { color: #c0caf5; }

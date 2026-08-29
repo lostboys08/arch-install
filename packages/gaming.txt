@@ -1,0 +1,7 @@
+steam
+gamemode
+mangohud
+wine-staging
+winetricks
+lib32-gamemode
+lib32-mangohud

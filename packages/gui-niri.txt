@@ -1,0 +1,15 @@
+niri
+xwayland-satellite
+waybar
+fuzzel
+swaync
+swww
+hyprlock
+hypridle
+ghostty
+xdg-desktop-portal-gnome
+xdg-desktop-portal-gtk
+polkit-gnome
+wl-clipboard
+grim
+slurp
