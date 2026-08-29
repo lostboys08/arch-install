@@ -72,6 +72,7 @@ repository, so `git pull` updates the CLI too.
 | `prym clean` | Orphaned packages, package cache trimmed to two versions, paru build cache, snapper cleanup algorithms, journals older than two weeks. |
 | `prym validate` | Parses the linked configs — the same check the `validate` step runs. |
 | `prym status` | Profile, hostname, root filesystem, guard state, snapshot count, and any packages the lists say should be installed but are not. |
+| `prym doctor` | Diagnoses the package toolchain: pacman and `libalpm` versions, which `libalpm` `paru` is linked against, the build tools, the guard, and the newest log. One screen, for a TTY with no scrollback. |
 | `prym help` | The same table, from the terminal. |
 
 `-y` / `--yes` skips the confirmations.
@@ -202,6 +203,31 @@ Elsewhere the mismatch is reported once rather than as a wall of failures:
 `packages` refuses to run and says why, `aur_install` falls back to pacman for
 anything in the repositories, `prym update` upgrades with pacman and tells you
 the AUR is being left behind, and `prym status` shows the helper as `BROKEN`.
+
+### Reading an error on a TTY that cannot scroll
+
+The Linux console has had no scrollback since kernel 5.9, so a failure part-way
+through a bootstrap disappears off the top of the screen. Nothing is lost,
+though:
+
+```bash
+prym doctor                       # one screen: pacman, libalpm, paru, tools
+less "$(ls -t ~/.local/state/prymx/*.log | head -1)"   # the whole run
+less ~/.local/state/prymx/aur-paru-bin.log             # one AUR build
+```
+
+`bootstrap.sh` tees everything to `~/.local/state/prymx/bootstrap-<stamp>.log`
+(`--no-log` turns that off). AUR builds go to their own
+`~/.local/state/prymx/aur-<package>.log` rather than the screen — a source
+build is hundreds of lines of compiler output, and the last twenty are the
+only ones worth reading, so those are printed on failure along with the path.
+Watch a build live from another VT (`Ctrl+Alt+F2`) with `tail -f`.
+
+The `aur` step also checks its own prerequisites first and names what is
+missing (`makepkg` comes with pacman, the rest with `base-devel`), and
+recognises the failures whose own error text does not point at the cause: the
+PrymX upgrade guard aborting `makepkg`'s dependency install, an unreachable
+AUR, a stale keyring, a full disk, and sudo without a TTY.
 
 ### Hardware and existing setup
 

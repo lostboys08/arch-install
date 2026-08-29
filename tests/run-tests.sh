@@ -381,10 +381,10 @@ printf '\n%s prym%s\n' "$D" "$N"
 if it "prym --help lists every documented subcommand"; then
     out=$(PRYMX_REPO="$REPO" "$REPO/bin/prym" --help 2>&1); rc=$?
     assert_ok "$rc" || true
-    for sub in update snapshot rollback sync clean help; do
+    for sub in update snapshot rollback sync clean doctor help; do
         assert_contains "$out" "$sub" || { break; }
     done
-    [[ $out == *update* && $out == *rollback* && $out == *clean* ]] && pass
+    [[ $out == *update* && $out == *rollback* && $out == *clean* && $out == *doctor* ]] && pass
 fi
 
 if it "prym --version prints the version"; then
@@ -665,6 +665,53 @@ if it "install_aur_helper skips a healthy paru"; then
     out=$(install_aur_helper 2>&1); rc=$?
     paru_health_reset
     assert_ok "$rc" && assert_contains "$out" "already installed" && pass
+fi
+
+if it "check_build_prereqs names the build tools that are missing"; then
+    out=$(PATH="$STUB:/usr/bin:/bin" check_build_prereqs 2>&1); rc=$?
+    # Neither makepkg nor fakeroot exists off Arch, which is the point: the
+    # step has to say which tool is missing rather than let makepkg fail.
+    assert_fails "$rc" \
+        && assert_contains "$out" "makepkg" \
+        && assert_contains "$out" "base-devel" && pass
+fi
+
+if it "a failed build prints the tail of its log instead of scrolling away"; then
+    bdir="$WORK/build-stubs"; mkdir -p "$bdir"
+    cat > "$bdir/makepkg" <<'MP'
+#!/bin/sh
+i=1; while [ $i -le 60 ]; do echo "build line $i"; i=$((i+1)); done
+echo "==> ERROR: A failure occurred in build()."
+exit 4
+MP
+    for t in fakeroot gcc make patch; do printf '#!/bin/sh\nexit 0\n' > "$bdir/$t"; done
+    cat > "$bdir/git" <<'GT'
+#!/bin/sh
+mkdir -p "$5"
+GT
+    chmod +x "$bdir"/*
+    state="$WORK/state-build"; mkdir -p "$state"
+    out=$(PATH="$bdir:$PATH" PRYMX_STATE_DIR="$state" build_aur_package paru-bin 2>&1); rc=$?
+    assert_fails "$rc" \
+        && assert_contains "$out" "A failure occurred in build()" \
+        && assert_contains "$out" "aur-paru-bin.log" \
+        && assert_not_contains "$out" "build line 1
+" \
+        && [[ -s "$state/aur-paru-bin.log" ]] && pass
+fi
+
+if it "a build blocked by the upgrade guard says so"; then
+    logfile="$WORK/guarded.log"
+    printf 'making...\nPrymX: upgrades are managed by `prym`\n' > "$logfile"
+    out=$(explain_build_failure "$logfile" 2>&1)
+    assert_contains "$out" "guard" && assert_contains "$out" "bootstrap.sh" && pass
+fi
+
+if it "explain_build_failure stays quiet about a failure it cannot name"; then
+    logfile="$WORK/unknown.log"
+    printf 'something went wrong in a way nobody predicted\n' > "$logfile"
+    out=$(explain_build_failure "$logfile" 2>&1)
+    assert_eq "$out" "" && pass
 fi
 
 if it "the aur module tries the source package after the binary one"; then

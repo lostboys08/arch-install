@@ -73,6 +73,9 @@ ${C_BOLD}COMMANDS${C_RESET}
     ${C_BOLD}validate${C_RESET}            Check that the linked configs parse (niri,
                         fish, tmux, ghostty, neovim, waybar, swaync).
     ${C_BOLD}status${C_RESET}              Show what PrymX thinks the machine looks like.
+    ${C_BOLD}doctor${C_RESET}              Diagnose the package toolchain: pacman, libalpm,
+                        paru, the build tools and the newest log. Fits on
+                        one screen, for a TTY with no scrollback.
     ${C_BOLD}help${C_RESET}                This message.
 
 ${C_BOLD}OPTIONS${C_RESET}
@@ -362,6 +365,53 @@ cmd_clean() {
     print_failures
 }
 
+# Everything needed to explain why a package cannot be installed, short
+# enough to read on a TTY that cannot scroll back.
+cmd_doctor() {
+    require_arch
+    section "$PRYMX_NAME doctor"
+
+    local row='  %-18s %s\n'
+
+    printf "$row" "pacman" "$(pacman --version 2>/dev/null | sed -n 's/.*Pacman v\([^ ]*\).*/\1/p' | head -n1)"
+    printf "$row" "libalpm" "libalpm.so.$(system_alpm_soname)"
+
+    if have_cmd paru; then
+        printf "$row" "paru" "$(command -v paru)"
+        printf "$row" "paru owned by" "$(pacman -Qqo "$(command -v paru)" 2>/dev/null | head -n1 || echo 'no package')"
+        printf "$row" "paru libalpm" "libalpm.so.$(paru_alpm_soname)"
+        if paru_usable; then
+            printf "$row" "paru status" "ok - $(paru --version 2>/dev/null | head -n1)"
+        else
+            printf "$row" "paru status" "BROKEN"
+            printf "$row" "" "$(paru_problem)"
+            printf "$row" "fix" "./bootstrap.sh --only aur"
+        fi
+    else
+        printf "$row" "paru" "not installed"
+        printf "$row" "fix" "./bootstrap.sh --only aur"
+    fi
+
+    local tool tools=""
+    for tool in makepkg fakeroot gcc make patch git; do
+        if have_cmd "$tool"; then tools+="$tool "; else tools+="${tool}:MISSING "; fi
+    done
+    printf "$row" "build tools" "$tools"
+
+    local guard="missing"
+    [[ -f /etc/pacman.d/hooks/00-prymx-guard.hook ]] && guard="active"
+    printf "$row" "upgrade guard" "$guard"
+
+    local latest=""
+    latest=$(ls -t "$PRYMX_STATE_DIR"/*.log 2>/dev/null | head -n1) || latest=""
+    if [[ -n $latest ]]; then
+        printf "$row" "newest log" "$latest"
+        printf "$row" "" "read it with: less $latest"
+    else
+        printf "$row" "newest log" "none in $PRYMX_STATE_DIR"
+    fi
+}
+
 cmd_status() {
     require_arch
     section "$PRYMX_NAME status"
@@ -437,6 +487,7 @@ main() {
         clean)    cmd_clean "$@" ;;
         validate) cmd_validate "$@" ;;
         status)   cmd_status "$@" ;;
+        doctor)   cmd_doctor "$@" ;;
         help|"")  usage ;;
         *)        err "Unknown command: $cmd"; usage >&2; return 2 ;;
     esac

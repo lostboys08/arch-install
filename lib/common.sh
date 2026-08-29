@@ -18,7 +18,7 @@ PRYMX_CONF="$PRYMX_CONF_DIR/prymx.conf"
 PRYMX_LOCK_DIR="/run/prymx"
 PRYMX_PACMAN_LOCK="$PRYMX_LOCK_DIR/pacman.lock"
 # shellcheck disable=SC2034
-PRYMX_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/prymx"
+PRYMX_STATE_DIR="${PRYMX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/prymx}"
 
 # $USER is not exported by every shell; several helpers depend on it.
 USER="${USER:-$(id -un)}"

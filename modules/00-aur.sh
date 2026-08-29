@@ -84,27 +84,76 @@ remove_paru() {
     return 0
 }
 
-build_aur_package() {
-    local pkg=$1 build_dir rc=0
-
+# makepkg itself ships with pacman, so it is only missing on a broken system -
+# but everything it shells out to comes from base-devel. Naming the missing
+# piece beats letting makepkg fail 200 lines later with its own wording.
+check_build_prereqs() {
     if ! pacman_install git base-devel; then
         err "Could not install the build prerequisites (git, base-devel)"
         return 1
     fi
+
+    local tool missing=()
+    for tool in makepkg fakeroot gcc make patch git; do
+        have_cmd "$tool" || missing+=("$tool")
+    done
+    (( ${#missing[@]} == 0 )) && return 0
+
+    err "Cannot build from the AUR - missing: ${missing[*]}"
+    err "makepkg comes with pacman; the rest come from base-devel:"
+    err "    sudo pacman -S --needed base-devel git"
+    return 1
+}
+
+build_aur_package() {
+    local pkg=$1 build_dir logfile rc=0
+
+    check_build_prereqs || return 1
 
     build_dir=$(mktemp -d -t aur-build-XXXXXXXX) || {
         err "Could not create a temporary build directory"
         return 1
     }
 
-    if ! git clone --depth 1 "$AUR_BASE_URL/$pkg.git" "$build_dir/$pkg"; then
-        err "Failed to clone $AUR_BASE_URL/$pkg.git"
-        rc=1
-    elif ! ( cd "$build_dir/$pkg" && makepkg -si --noconfirm ); then
-        err "makepkg failed while building $pkg"
-        rc=1
+    mkdir -p "$PRYMX_STATE_DIR" 2>/dev/null || true
+    logfile="$PRYMX_STATE_DIR/aur-$pkg.log"
+
+    # The build goes to a file rather than the screen. A source build scrolls
+    # hundreds of lines past a TTY with no scrollback, which is exactly where
+    # this failure gets diagnosed; the tail below is what is worth reading.
+    log "Building $pkg - output goes to $logfile"
+    log "Watch it live from another TTY with: tail -f $logfile"
+    ( git clone --depth 1 "$AUR_BASE_URL/$pkg.git" "$build_dir/$pkg" \
+        && cd "$build_dir/$pkg" \
+        && makepkg -si --noconfirm ) > "$logfile" 2>&1 || rc=$?
+
+    if (( rc != 0 )); then
+        err "Building $pkg failed (exit $rc). The last 20 lines of $logfile:"
+        tail -n 20 "$logfile" 2>/dev/null | sed 's/^/       /' >&2 || true
+        explain_build_failure "$logfile"
     fi
 
     rm -rf "$build_dir"
     return "$rc"
+}
+
+# The failures worth recognising by name, because their own error text does
+# not point at the cause.
+explain_build_failure() {
+    local logfile=$1
+
+    if grep -q 'upgrades are managed by' "$logfile" 2>/dev/null; then
+        err "The PrymX pacman guard aborted makepkg's dependency install."
+        err "Run this through ./bootstrap.sh, which holds the guard lock, or"
+        err "opt out for one command with PRYMX_ALLOW_PACMAN=1."
+    elif grep -qi 'Could not resolve host\|Failed to connect\|Network is unreachable' "$logfile" 2>/dev/null; then
+        err "The AUR could not be reached - check the network, then re-run."
+    elif grep -qi 'signature from .* is invalid\|unknown public key\|PGP' "$logfile" 2>/dev/null; then
+        err "A PGP signature check failed. Import the key makepkg names above,"
+        err "or refresh the keyring: sudo pacman -S archlinux-keyring"
+    elif grep -qi 'no space left on device' "$logfile" 2>/dev/null; then
+        err "The build ran out of disk space."
+    elif grep -qi 'a password is required\|sudo:.*no tty' "$logfile" 2>/dev/null; then
+        err "makepkg could not get sudo non-interactively. Run 'sudo -v' first."
+    fi
 }
