@@ -27,7 +27,6 @@ install_aur_helper() {
         fi
         warn "paru is installed but unusable: $(paru_problem)"
         log "Rebuilding it against the libalpm this system actually has"
-        remove_paru || return 1
     else
         log "paru not found - building it from the AUR"
     fi
@@ -38,7 +37,11 @@ install_aur_helper() {
 build_aur_helper() {
     local pkg
     for pkg in "${AUR_HELPER_PKGS[@]}"; do
-        log "Building $pkg from the AUR"
+        # Before each attempt, not just after a failed one: a previous run can
+        # leave a -debug package behind with no paru on PATH at all, and that
+        # is enough to make pacman refuse the install.
+        remove_paru || return 1
+
         if ! build_aur_package "$pkg"; then
             warn "$pkg did not build - trying the next candidate"
             continue
@@ -51,33 +54,61 @@ build_aur_helper() {
         fi
 
         warn "$pkg installed but is not usable: $(paru_problem)"
-        remove_paru || return 1
     done
 
     err "Could not install a working paru (tried: ${AUR_HELPER_PKGS[*]})"
     return 1
 }
 
-# paru and paru-bin conflict, and --noconfirm answers 'no' to pacman's conflict
-# prompt - so the broken one has to be gone before the rebuild, or the rebuild
-# fails for a reason that has nothing to do with the mismatch.
-remove_paru() {
-    local bin owner
-    bin=$(command -v paru 2>/dev/null) || return 0
+# Everything a rebuild would collide with. Two things make this more than
+# "the package that owns /usr/bin/paru":
+#
+#   - paru and paru-bin conflict, and --noconfirm answers 'no' to pacman's
+#     conflict prompt, so a leftover helper fails the install on its own.
+#   - each ships a -debug companion. paru-bin-debug owns
+#     /usr/lib/debug/usr/bin/paru.debug, which paru-debug also wants, so the
+#     transaction dies with "exists in filesystem" - and that companion is
+#     invisible to `pacman -Qqo /usr/bin/paru`, and outlives a paru that has
+#     already been removed.
+paru_conflicting_packages() {
+    local bin owner name candidates=() found=() seen=" "
 
-    owner=$(pacman -Qqo "$bin" 2>/dev/null | head -n1 | awk '{print $1}')
-    # A package name, and nothing that could be read as a pacman option: this
-    # feeds a removal.
-    if [[ -z $owner || ! $owner =~ ^[A-Za-z0-9][A-Za-z0-9@._+-]*$ ]]; then
-        warn "$bin is not owned by a package - leaving it in place"
-        return 0
+    bin=$(command -v paru 2>/dev/null) || bin=""
+    if [[ -n $bin ]]; then
+        owner=$(pacman -Qqo "$bin" 2>/dev/null | head -n1 | awk '{print $1}')
+        # A package name, and nothing that could be read as a pacman option:
+        # this feeds a removal.
+        if [[ $owner =~ ^[A-Za-z0-9][A-Za-z0-9@._+-]*$ ]]; then
+            candidates+=("$owner")
+        elif [[ -n $owner ]]; then
+            warn "Ignoring an implausible package name for $bin: $owner"
+        fi
     fi
+    candidates+=("${AUR_HELPER_PKGS[@]}")
 
-    log "Removing the broken $owner"
+    local pkg
+    for pkg in "${candidates[@]}"; do
+        for name in "$pkg" "$pkg-debug"; do
+            [[ $seen == *" $name "* ]] && continue
+            seen+="$name "
+            pkg_installed "$name" && found+=("$name")
+        done
+    done
+
+    (( ${#found[@]} )) && printf '%s\n' "${found[@]}"
+    return 0
+}
+
+remove_paru() {
+    local pkgs=()
+    mapfile -t pkgs < <(paru_conflicting_packages)
+    (( ${#pkgs[@]} )) || return 0
+
+    log "Removing so the rebuild can install: ${pkgs[*]}"
     # -dd: nothing should depend on the AUR helper, and a broken paru must not
     # be kept alive by a dependency check we are about to satisfy again anyway.
-    if ! sudo pacman -Rdd --noconfirm "$owner"; then
-        err "Could not remove $owner"
+    if ! sudo pacman -Rdd --noconfirm "${pkgs[@]}"; then
+        err "Could not remove: ${pkgs[*]}"
         return 1
     fi
     paru_health_reset
@@ -142,7 +173,15 @@ build_aur_package() {
 explain_build_failure() {
     local logfile=$1
 
-    if grep -q 'upgrades are managed by' "$logfile" 2>/dev/null; then
+    local owner
+    if grep -q 'exists in filesystem' "$logfile" 2>/dev/null; then
+        owner=$(sed -n 's/.*exists in filesystem (owned by \([^)]*\)).*/\1/p' "$logfile" | head -n1)
+        err "Another package already owns a file this one installs."
+        if [[ -n $owner ]]; then
+            err "Remove the package that owns it, then re-run:"
+            err "    sudo pacman -Rdd $owner"
+        fi
+    elif grep -q 'upgrades are managed by' "$logfile" 2>/dev/null; then
         err "The PrymX pacman guard aborted makepkg's dependency install."
         err "Run this through ./bootstrap.sh, which holds the guard lock, or"
         err "opt out for one command with PRYMX_ALLOW_PACMAN=1."

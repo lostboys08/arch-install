@@ -98,6 +98,9 @@ cat > "$STUB/pacman" <<'EOF'
 #!/bin/sh
 case "$1" in
     -Qq) [ -n "${PACMAN_INSTALLED:-}" ] && echo "$PACMAN_INSTALLED" | tr ' ' '\n' | grep -qx "$2" ;;
+    # Ownership is only claimed when the test says so, the way real pacman
+    # exits non-zero for a path no package owns.
+    -Qqo) [ -n "${PACMAN_OWNER:-}" ] || exit 1; echo "$PACMAN_OWNER 1.0-1" ;;
     *) echo "[stub] pacman $*"; exit 0 ;;
 esac
 EOF
@@ -665,6 +668,49 @@ if it "install_aur_helper skips a healthy paru"; then
     out=$(install_aur_helper 2>&1); rc=$?
     paru_health_reset
     assert_ok "$rc" && assert_contains "$out" "already installed" && pass
+fi
+
+if it "the conflict list includes the -debug companion packages"; then
+    out=$(PACMAN_OWNER=paru-bin \
+          PACMAN_INSTALLED="paru-bin paru-bin-debug" \
+          paru_conflicting_packages | tr '\n' ' ')
+    assert_eq "$out" "paru-bin paru-bin-debug " && pass
+fi
+
+if it "a leftover -debug package is found with no paru installed at all"; then
+    # The state a failed rebuild leaves behind: paru itself is gone, but
+    # paru-bin-debug still owns /usr/lib/debug/usr/bin/paru.debug and blocks
+    # the next install.
+    out=$(PACMAN_INSTALLED="paru-bin-debug" paru_conflicting_packages | tr '\n' ' ')
+    assert_eq "$out" "paru-bin-debug " && pass
+fi
+
+if it "the conflict list is empty on a machine that never had paru"; then
+    out=$(PACMAN_INSTALLED="" paru_conflicting_packages)
+    assert_eq "$out" "" && pass
+fi
+
+if it "an implausible package name is never fed to a removal"; then
+    # stdout is what reaches pacman; the warning on stderr may quote it.
+    out=$(PACMAN_OWNER="--nodeps" PACMAN_INSTALLED="paru-bin" \
+          paru_conflicting_packages 2>/dev/null | tr '\n' ' ')
+    warning=$(PACMAN_OWNER="--nodeps" PACMAN_INSTALLED="paru-bin" \
+              paru_conflicting_packages 2>&1 >/dev/null)
+    assert_eq "$out" "paru-bin " \
+        && assert_contains "$warning" "implausible" && pass
+fi
+
+if it "remove_paru removes the helper and its debug companion together"; then
+    out=$(PACMAN_OWNER=paru-bin PACMAN_INSTALLED="paru-bin paru-bin-debug" \
+          remove_paru 2>&1)
+    assert_contains "$out" "pacman -Rdd --noconfirm paru-bin paru-bin-debug" && pass
+fi
+
+if it "a file conflict names the package to remove"; then
+    logfile="$WORK/conflict.log"
+    printf 'error: failed to commit transaction (conflicting files)\nparu-debug: /usr/lib/debug/usr/bin/paru.debug exists in filesystem (owned by paru-bin-debug)\n' > "$logfile"
+    out=$(explain_build_failure "$logfile" 2>&1)
+    assert_contains "$out" "sudo pacman -Rdd paru-bin-debug" && pass
 fi
 
 if it "check_build_prereqs names the build tools that are missing"; then

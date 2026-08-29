@@ -192,6 +192,12 @@ The `aur` step handles this rather than assuming the helper works:
 - Candidates are tried in order: `paru-bin` first, because it is a prebuilt
   binary and costs seconds instead of a Rust build, then `paru`, which
   `makepkg` links against whatever `libalpm` is installed right now.
+- Everything a rebuild would collide with is removed first, including the
+  `-debug` companion packages. `paru-bin-debug` owns
+  `/usr/lib/debug/usr/bin/paru.debug`, which `paru-debug` also installs, so
+  leaving it behind fails the transaction with `exists in filesystem` — and
+  it is invisible to `pacman -Qqo /usr/bin/paru`, so it outlives the `paru`
+  it came with.
 
 So the fix for a mismatch is to re-run the one step:
 
