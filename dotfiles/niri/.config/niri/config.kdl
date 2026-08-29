@@ -100,7 +100,7 @@ window-rule {
 binds {
     Mod+Shift+Slash { show-hotkey-overlay; }
 
-    Mod+Return  { spawn "kitty"; }
+    Mod+Return  { spawn "ghostty"; }
     Mod+D       { spawn "fuzzel"; }
     Mod+Alt+L   { spawn "hyprlock"; }
     Mod+N       { spawn "swaync-client" "-t" "-sw"; }

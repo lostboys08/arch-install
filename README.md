@@ -1,8 +1,8 @@
 # arch-install
 
 Modular post-install bootstrap for a vanilla Arch Linux desktop: niri (Wayland),
-PipeWire audio, a small development toolchain, Btrfs snapshots, and gaming
-tweaks — plus dotfiles linked into `$HOME` with GNU Stow.
+PipeWire audio, ghostty, a small development toolchain, Btrfs snapshots, and
+gaming tweaks — plus dotfiles linked into `$HOME` with GNU Stow.
 
 ## Usage
 
@@ -35,6 +35,7 @@ missing, and re-links the dotfiles.
 │   └── 30-sysctl.sh          # apply_sysctl_tweaks()       - /etc/sysctl.d/99-gaming.conf
 └── dotfiles/                 # one GNU Stow package per directory
     ├── fish/
+    ├── ghostty/
     ├── niri/
     ├── tmux/
     └── nvim/
@@ -101,6 +102,13 @@ it aside, or take it over with:
 stow --dir dotfiles --target "$HOME" --adopt nvim
 git diff        # review what --adopt pulled into the repo
 ```
+
+### A note on ghostty and terminfo
+
+ghostty sets `TERM=xterm-ghostty`, and that terminfo entry only exists where
+ghostty is installed. When SSHing into a host that does not have it, either
+copy the entry over once with `infocmp -x | ssh host -- tic -x -`, or prefix the
+command with `TERM=xterm-256color`.
 
 ## After the first run
 

@@ -6,7 +6,7 @@ swaync
 swww
 hyprlock
 hypridle
-kitty
+ghostty
 xdg-desktop-portal-gnome
 xdg-desktop-portal-gtk
 polkit-gnome
