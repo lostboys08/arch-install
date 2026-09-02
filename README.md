@@ -191,6 +191,14 @@ The `aur` step handles this rather than assuming the helper works:
 - Candidates are tried in order: `paru-bin` first, because it is a prebuilt
   binary and costs seconds instead of a Rust build, then `paru`, which
   `makepkg` links against whatever `libalpm` is installed right now.
+- The debug half goes with it. `paru-bin` ships `paru-bin-debug` and a source
+  build produces `paru-debug`; both own `/usr/lib/debug/usr/bin/paru.debug`.
+  Removing `paru-bin` alone used to leave `paru-bin-debug` behind, and the
+  `paru` build that followed died on the file conflict
+  (`exists in filesystem (owned by paru-bin-debug)`) rather than on anything to
+  do with the mismatch. The removal now takes the debug package with it, any
+  leftover is swept before each build, and the helper is built with `!debug`
+  so it produces no debug package of its own.
 
 So the fix for a mismatch is to re-run the one step:
 

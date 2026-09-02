@@ -98,6 +98,8 @@ cat > "$STUB/pacman" <<'EOF'
 #!/bin/sh
 case "$1" in
     -Qq) [ -n "${PACMAN_INSTALLED:-}" ] && echo "$PACMAN_INSTALLED" | tr ' ' '\n' | grep -qx "$2" ;;
+    # Which package owns a file; PACMAN_OWNER names it, empty means nobody.
+    -Qqo) [ -n "${PACMAN_OWNER:-}" ] && echo "$PACMAN_OWNER" ;;
     *) echo "[stub] pacman $*"; exit 0 ;;
 esac
 EOF
@@ -669,6 +671,57 @@ fi
 
 if it "the aur module tries the source package after the binary one"; then
     assert_eq "${AUR_HELPER_PKGS[*]}" "paru-bin paru" && pass
+fi
+
+if it "remove_paru takes the leftover -debug package with it"; then
+    out=$(PACMAN_OWNER=paru-bin PACMAN_INSTALLED="paru-bin paru-bin-debug" \
+          remove_paru 2>&1); rc=$?
+    paru_health_reset
+    assert_ok "$rc" \
+        && assert_contains "$out" "-Rdd --noconfirm paru-bin paru-bin-debug" && pass
+fi
+
+if it "remove_paru does not list a -debug package that is not installed"; then
+    out=$(PACMAN_OWNER=paru-bin PACMAN_INSTALLED="paru-bin" remove_paru 2>&1); rc=$?
+    paru_health_reset
+    assert_ok "$rc" \
+        && assert_contains "$out" "-Rdd --noconfirm paru-bin" \
+        && assert_not_contains "$out" "paru-bin-debug" && pass
+fi
+
+if it "remove_paru leaves an unowned paru alone"; then
+    out=$(PACMAN_OWNER="" remove_paru 2>&1); rc=$?
+    paru_health_reset
+    assert_ok "$rc" && assert_contains "$out" "not owned by a package" \
+        && assert_not_contains "$out" "-Rdd" && pass
+fi
+
+if it "remove_paru_debug_packages sweeps a debug half left by an earlier run"; then
+    out=$(PACMAN_INSTALLED="paru-debug" remove_paru_debug_packages 2>&1); rc=$?
+    assert_ok "$rc" && assert_contains "$out" "-Rdd --noconfirm paru-debug" && pass
+fi
+
+if it "remove_paru_debug_packages is quiet when there is nothing to remove"; then
+    out=$(PACMAN_INSTALLED="" remove_paru_debug_packages 2>&1); rc=$?
+    assert_ok "$rc" && assert_eq "$out" "" && pass
+fi
+
+if it "the makepkg config for helper builds disables debug packages"; then
+    conf="$WORK/makepkg.conf"
+    write_makepkg_conf "$conf" >/dev/null 2>&1; rc=$?
+    out=$(cat "$conf")
+    assert_ok "$rc" && assert_contains "$out" "OPTIONS+=(!debug)" \
+        && assert_eq "$(tail -n1 "$conf")" "OPTIONS+=(!debug)" && pass
+fi
+
+if it "the makepkg config keeps the system settings it is built on"; then
+    conf="$WORK/makepkg-system.conf"
+    write_makepkg_conf "$conf" >/dev/null 2>&1
+    if [[ -r /etc/makepkg.conf ]]; then
+        assert_contains "$(cat "$conf")" "source /etc/makepkg.conf" && pass
+    else
+        skipped "no /etc/makepkg.conf on this machine"
+    fi
 fi
 
 if it "package lists contain bare package names only"; then
